@@ -188,6 +188,14 @@ class JobInfoGcsServiceHandler {
   virtual void HandleGetNextJobID(GetNextJobIDRequest request,
                                   GetNextJobIDReply *reply,
                                   SendReplyCallback send_reply_callback) = 0;
+
+  virtual void HandleCleanupJob(rpc::CleanupJobRequest request,
+                               rpc::CleanupJobReply *reply,
+                               rpc::SendReplyCallback send_reply_callback) = 0;
+
+  virtual void HandleBatchCleanupJobs(rpc::BatchCleanupJobsRequest request,
+                                     rpc::BatchCleanupJobsReply *reply,
+                                     rpc::SendReplyCallback send_reply_callback) = 0;
 };
 
 /// The `GrpcService` for `JobInfoGcsService`.
@@ -212,6 +220,8 @@ class JobInfoGrpcService : public GrpcService {
     JOB_INFO_SERVICE_RPC_HANDLER(GetAllJobInfo);
     JOB_INFO_SERVICE_RPC_HANDLER(ReportJobError);
     JOB_INFO_SERVICE_RPC_HANDLER(GetNextJobID);
+    JOB_INFO_SERVICE_RPC_HANDLER(CleanupJob);
+    JOB_INFO_SERVICE_RPC_HANDLER(BatchCleanupJobs);
   }
 
  private:

@@ -115,6 +115,27 @@ class GcsJobManager : public rpc::JobInfoHandler {
   /// succeed or fail) will be reported periodically.
   void RecordMetrics();
 
+  /// 清理单个作业
+  /// \param job_id 要清理的作业ID
+  /// \param error_message 如果清理失败，将包含错误信息
+  /// \return 清理是否成功
+  bool CleanupJob(const JobID &job_id, std::string *error_message);
+  
+  /// 批量清理作业
+  /// \param job_ids 要清理的作业ID列表
+  /// \return 成功清理的作业数量
+  int BatchCleanupJobs(const std::vector<JobID> &job_ids);
+
+  /// 处理清理单个作业的请求
+  void HandleCleanupJob(rpc::CleanupJobRequest request,
+                        rpc::CleanupJobReply *reply,
+                        rpc::SendReplyCallback send_reply_callback) override;
+                        
+  /// 处理批量清理作业的请求
+  void HandleBatchCleanupJobs(rpc::BatchCleanupJobsRequest request,
+                             rpc::BatchCleanupJobsReply *reply,
+                             rpc::SendReplyCallback send_reply_callback) override;
+
  private:
   void ClearJobInfos(const rpc::JobTableData &job_data);
 
@@ -149,6 +170,12 @@ class GcsJobManager : public rpc::JobInfoHandler {
 
   /// If true, driver job events are exported for Export API
   bool export_event_write_enabled_ = false;
+
+  // 启动定期清理任务
+  void StartPeriodicCleanupTask();
+  
+  // 执行定期清理操作
+  void PerformPeriodicCleanup();
 };
 
 }  // namespace gcs

@@ -385,4 +385,42 @@ DEFINE_stats(
     (),
     ray::stats::GAUGE);
 
+// 定义作业相关指标
+DEFINE_stats(total_jobs,
+             "Total number of jobs",
+             /*tags=*/(),
+             /*buckets=*/(),
+             ray::stats::GAUGE);
+
+// 定义作业清理相关指标
+DEFINE_stats(job_cleanup_success,
+             "Number of successfully cleaned up jobs",
+             /*tags=*/(),
+             /*buckets=*/(),
+             ray::stats::COUNT);
+
+DEFINE_stats(job_cleanup_failure,
+             "Number of failed job cleanup attempts",
+             /*tags=*/(),
+             /*buckets=*/(),
+             ray::stats::COUNT);
+
+DEFINE_stats(job_batch_cleanup_count,
+             "Number of jobs in batch cleanup",
+             /*tags=*/(),
+             /*buckets=*/(),
+             ray::stats::COUNT);
+
+DEFINE_stats(job_batch_cleanup_success,
+             "Number of successfully cleaned up jobs in batch",
+             /*tags=*/(),
+             /*buckets=*/(),
+             ray::stats::COUNT);
+
+DEFINE_stats(job_batch_cleanup_duration_ms,
+             "Duration of batch job cleanup",
+             /*tags=*/(),
+             /*buckets=*/(),
+             ray::stats::GAUGE);
+
 }  // namespace ray::stats

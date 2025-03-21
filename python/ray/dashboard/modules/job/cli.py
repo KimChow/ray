@@ -521,3 +521,82 @@ def list(address: Optional[str], headers: Optional[str], verify: Union[bool, str
     # Set no_format to True because the logs may have unescaped "{" and "}"
     # and the CLILogger calls str.format().
     cli_logger.print(pprint.pformat(client.list_jobs()), no_format=True)
+
+
+@click.command()
+@click.argument("job_id", required=True)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Force cleanup even if job is still running",
+)
+def cleanup_job(job_id, force):
+    """Cleanup a job from GCS."""
+    try:
+        address = services.get_address_to_use_or_die()
+        client = ray.dashboard.modules.job.Client(address)
+        result = client.cleanup_job(job_id, force=force)
+        if result.get("success"):
+            click.echo(f"Successfully cleaned up job {job_id}")
+        else:
+            click.echo(f"Failed to clean up job {job_id}: {result.get('error')}")
+    except Exception as e:
+        click.echo(f"Error cleaning up job {job_id}: {str(e)}")
+        sys.exit(1)
+
+
+@click.command()
+@click.option(
+    "--older-than-days",
+    type=float,
+    default=7.0,
+    help="Cleanup jobs older than specified days",
+)
+@click.option(
+    "--max-jobs",
+    type=int,
+    default=1000,
+    help="Maximum number of jobs to cleanup",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Only print jobs that would be cleaned up without actually doing it",
+)
+def batch_cleanup_jobs(older_than_days, max_jobs, dry_run):
+    """Batch cleanup old jobs from GCS."""
+    try:
+        address = services.get_address_to_use_or_die()
+        client = ray.dashboard.modules.job.Client(address)
+        
+        # 获取所有作业信息
+        all_jobs = client.list_jobs()
+        
+        # 筛选出符合条件的作业
+        cutoff_time = time.time() - older_than_days * 24 * 3600
+        jobs_to_cleanup = []
+        
+        for job in all_jobs:
+            if job.get("end_time") and job.get("end_time") < cutoff_time:
+                jobs_to_cleanup.append(job.get("job_id"))
+                if len(jobs_to_cleanup) >= max_jobs:
+                    break
+        
+        if dry_run:
+            click.echo(f"Would clean up {len(jobs_to_cleanup)} jobs")
+            for job_id in jobs_to_cleanup:
+                click.echo(f"  {job_id}")
+            return
+        
+        if not jobs_to_cleanup:
+            click.echo("No jobs to clean up")
+            return
+            
+        result = client.batch_cleanup_jobs(jobs_to_cleanup)
+        click.echo(f"Cleaned up {result.get('success_count')}/{result.get('total_count')} jobs")
+        
+    except Exception as e:
+        click.echo(f"Error in batch cleanup: {str(e)}")
+        sys.exit(1)

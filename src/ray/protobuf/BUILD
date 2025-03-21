@@ -24,12 +24,29 @@ python_grpc_compile(
 )
 
 proto_library(
+    name = "status_proto",
+    srcs = ["status.proto"],
+    visibility = ["//visibility:public"],
+)
+
+cc_proto_library(
+    name = "status_cc_proto",
+    deps = [":status_proto"],
+)
+
+python_grpc_compile(
+    name = "status_py_proto",
+    deps = [":status_proto"],
+)
+
+proto_library(
     name = "gcs_proto",
     srcs = ["gcs.proto"],
     visibility = ["//java:__subpackages__"],
     deps = [
         ":common_proto",
         ":runtime_env_common_proto",
+        ":status_proto",
     ],
 )
 
@@ -158,6 +175,7 @@ proto_library(
         ":common_proto",
         ":gcs_proto",
         ":pubsub_proto",
+        ":status_proto",
     ],
 )
 

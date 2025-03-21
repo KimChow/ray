@@ -51,6 +51,18 @@ class MockGcsJobManager : public GcsJobManager {
               AddJobFinishedListener,
               (std::function<void(std::shared_ptr<JobID>)> listener),
               (override));
+  MOCK_METHOD(void,
+              HandleCleanupJob,
+              (rpc::CleanupJobRequest request,
+               rpc::CleanupJobReply *reply,
+               rpc::SendReplyCallback send_reply_callback),
+              (override));
+  MOCK_METHOD(void,
+              HandleBatchCleanupJobs,
+              (rpc::BatchCleanupJobsRequest request,
+               rpc::BatchCleanupJobsReply *reply,
+               rpc::SendReplyCallback send_reply_callback),
+              (override));
 };
 
 }  // namespace gcs

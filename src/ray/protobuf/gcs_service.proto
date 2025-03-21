@@ -19,6 +19,7 @@ package ray.rpc;
 import "src/ray/protobuf/common.proto";
 import "src/ray/protobuf/gcs.proto";
 import "src/ray/protobuf/pubsub.proto";
+import "src/ray/protobuf/status.proto";
 
 message AddJobRequest {
   JobTableData data = 1;
@@ -76,6 +77,10 @@ service JobInfoGcsService {
   rpc ReportJobError(ReportJobErrorRequest) returns (ReportJobErrorReply);
   // Get next job id.
   rpc GetNextJobID(GetNextJobIDRequest) returns (GetNextJobIDReply);
+  // 清理单个作业
+  rpc CleanupJob(CleanupJobRequest) returns (CleanupJobReply);
+  // 批量清理作业
+  rpc BatchCleanupJobs(BatchCleanupJobsRequest) returns (BatchCleanupJobsReply);
 }
 
 message GetActorInfoRequest {
@@ -737,11 +742,6 @@ service NodeResourceInfoGcsService {
   rpc GetDrainingNodes(GetDrainingNodesRequest) returns (GetDrainingNodesReply);
 }
 
-message GcsStatus {
-  int32 code = 1;
-  string message = 2;
-}
-
 // Service for node info access.
 service NodeInfoGcsService {
   // Register a client to GCS Service. Must be called before any other RPC in GCSClient.
@@ -864,3 +864,40 @@ service TaskInfoGcsService {
 }
 
 ///////////////////////////////////////////////////////////////////////////////
+
+message CleanupJobRequest {
+  bytes job_id = 1;
+}
+
+message CleanupJobReply {
+  GcsStatus status = 1;
+  int64 cleanup_time_ms = 2;
+  JobCleanupStatus cleanup_status = 3;
+  string error_message = 4;
+}
+
+message JobCleanupPolicy {
+  // 清理完成超过指定秒数的作业
+  optional int64 finished_for_seconds = 1;
+  // 最大保留的已完成作业数
+  optional int32 max_finished_jobs = 2;
+}
+
+message BatchCleanupJobsRequest {
+  // 要清理的作业ID列表，如果为空则使用清理策略
+  repeated bytes job_ids = 1;
+  // 清理策略
+  optional JobCleanupPolicy cleanup_policy = 2;
+}
+
+message FailedJobCleanup {
+  bytes job_id = 1;
+  string error_message = 2;
+}
+
+message BatchCleanupJobsReply {
+  GcsStatus status = 1;
+  int32 success_count = 2;
+  int64 total_duration_ms = 3;
+  repeated FailedJobCleanup failed_jobs = 4;
+}

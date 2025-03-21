@@ -51,6 +51,16 @@ DECLARE_stats(actors);
 /// Job stats.
 DECLARE_stats(running_jobs);
 DECLARE_stats(finished_jobs);
+DECLARE_stats(total_jobs);
+
+/// Job cleanup stats
+DECLARE_stats(job_cleanup_success);
+DECLARE_stats(job_cleanup_failure);
+DECLARE_stats(job_batch_cleanup_count);
+DECLARE_stats(job_batch_cleanup_success);
+DECLARE_stats(job_batch_cleanup_duration_ms);
+DECLARE_stats(job_auto_cleanup_count);
+DECLARE_stats(job_auto_cleanup_success);
 
 /// Placement group stats, broken down by state.
 DECLARE_stats(placement_groups);

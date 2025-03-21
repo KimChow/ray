@@ -23,6 +23,7 @@
 
 #include "ray/gcs/pb_util.h"
 #include "ray/stats/metric.h"
+#include "ray/util/event.h"
 
 namespace ray {
 namespace gcs {
@@ -37,6 +38,85 @@ void GcsJobManager::Initialize(const GcsInitData &gcs_init_data) {
     if (!job_table_data.is_dead()) {
       running_job_ids_.insert(job_id);
     }
+  }
+  
+  // 启动定期清理任务
+  StartPeriodicCleanupTask();
+}
+
+void GcsJobManager::StartPeriodicCleanupTask() {
+  // 每10分钟执行一次清理
+  const auto cleanup_interval_ms = 10 * 60 * 1000;
+  
+  // 创建定期执行的任务
+  auto cleanup_timer = std::make_shared<boost::asio::deadline_timer>(
+      io_context_, boost::posix_time::milliseconds(cleanup_interval_ms));
+  
+  // 创建一个自引用的回调函数
+  auto cleanup_callback = std::make_shared<std::function<void(const boost::system::error_code&)>>();
+  *cleanup_callback = [this, cleanup_timer, cleanup_interval_ms, cleanup_callback](
+                         const boost::system::error_code &error) {
+    if (error) {
+      RAY_LOG(WARNING) << "Error in periodic job cleanup task: " << error.message();
+      return;
+    }
+    
+    // 执行清理操作
+    PerformPeriodicCleanup();
+    
+    // 重新设置定时器
+    cleanup_timer->expires_from_now(boost::posix_time::milliseconds(cleanup_interval_ms));
+    cleanup_timer->async_wait(*cleanup_callback);
+  };
+  
+  // 启动定时器
+  cleanup_timer->async_wait(*cleanup_callback);
+  
+  RAY_LOG(INFO) << "Started periodic job cleanup task with interval " 
+                << cleanup_interval_ms << "ms";
+}
+
+void GcsJobManager::PerformPeriodicCleanup() {
+  RAY_LOG(INFO) << "Performing periodic job cleanup";
+  
+  // 获取当前时间
+  auto current_time = current_sys_time_ms();
+  // 设置清理阈值为1小时前 (确保类型一致)
+  int64_t cleanup_threshold = current_time - (60 * 60 * 1000);
+  
+  // 获取所有作业信息
+  auto on_get_all_jobs = [this, cleanup_threshold](
+                             const absl::flat_hash_map<JobID, rpc::JobTableData> &result) {
+    RAY_CHECK(thread_checker_.IsOnSameThread());
+    
+    std::vector<JobID> jobs_to_cleanup;
+    
+    // 筛选出需要清理的作业
+    for (const auto &[job_id, job_data] : result) {
+      // 只清理已完成的作业，确保类型一致的比较
+      if (job_data.is_dead() && 
+          static_cast<int64_t>(job_data.end_time()) < cleanup_threshold) {
+        jobs_to_cleanup.push_back(job_id);
+      }
+    }
+    
+    if (!jobs_to_cleanup.empty()) {
+      RAY_LOG(INFO) << "Found " << jobs_to_cleanup.size() 
+                    << " completed jobs older than 1 hour to clean up";
+      
+      // 批量清理作业
+      int success_count = BatchCleanupJobs(jobs_to_cleanup);
+      
+      RAY_LOG(INFO) << "Periodic cleanup completed: " << success_count << "/" 
+                    << jobs_to_cleanup.size() << " jobs successfully cleaned up";
+    } else {
+      RAY_LOG(DEBUG) << "No jobs found for periodic cleanup";
+    }
+  };
+  
+  Status status = gcs_table_storage_.JobTable().GetAll({on_get_all_jobs, io_context_});
+  if (!status.ok()) {
+    RAY_LOG(ERROR) << "Failed to get all jobs for periodic cleanup: " << status.ToString();
   }
 }
 
@@ -497,8 +577,154 @@ void GcsJobManager::OnNodeDead(const NodeID &node_id) {
 }
 
 void GcsJobManager::RecordMetrics() {
-  ray::stats::STATS_running_jobs.Record(running_job_ids_.size());
-  ray::stats::STATS_finished_jobs.Record(finished_jobs_count_);
+  stats::STATS_running_jobs.Record(running_job_ids_.size());
+  stats::STATS_finished_jobs.Record(finished_jobs_count_);
+  stats::STATS_total_jobs.Record(cached_job_configs_.size());
+}
+
+bool GcsJobManager::CleanupJob(const JobID &job_id, std::string *error_message) {
+  RAY_LOG(INFO) << "Cleaning up job " << job_id;
+  
+  // 检查作业是否存在
+  auto it = cached_job_configs_.find(job_id);
+  if (it == cached_job_configs_.end()) {
+    if (error_message) {
+      *error_message = "Job " + job_id.Hex() + " not found";
+    }
+    RAY_LOG(WARNING) << "Failed to cleanup job " << job_id << ": job not found";
+    stats::STATS_job_cleanup_failure.Record(1);
+    return false;
+  }
+  
+  // 检查作业是否已经完成
+  auto running_it = running_job_ids_.find(job_id);
+  if (running_it != running_job_ids_.end()) {
+    if (error_message) {
+      *error_message = "Cannot cleanup running job " + job_id.Hex();
+    }
+    RAY_LOG(WARNING) << "Failed to cleanup job " << job_id << ": job is still running";
+    stats::STATS_job_cleanup_failure.Record(1);
+    return false;
+  }
+  
+  // 从存储中删除作业信息
+  auto on_delete_done = [this, job_id, error_message](const Status &status) {
+    if (!status.ok()) {
+      if (error_message) {
+        *error_message = "Failed to delete job from storage: " + status.ToString();
+      }
+      RAY_LOG(ERROR) << "Failed to cleanup job " << job_id << ": " << status.ToString();
+      stats::STATS_job_cleanup_failure.Record(1);
+      return;
+    }
+    
+    // 清理作业相关的运行时环境
+    runtime_env_manager_.RemoveURIReference(job_id.Hex());
+    
+    // 从缓存中删除作业配置
+    cached_job_configs_.erase(job_id);
+    
+    // 记录指标
+    stats::STATS_job_cleanup_success.Record(1);
+    RAY_LOG(INFO) << "Successfully cleaned up job " << job_id;
+  };
+  
+  auto job_table_data = rpc::JobTableData();
+  job_table_data.set_job_id(job_id.Binary());
+  
+  Status status = gcs_table_storage_.JobTable().Delete(job_id, {on_delete_done, io_context_});
+  if (!status.ok()) {
+    if (error_message) {
+      *error_message = "Failed to delete job from storage: " + status.ToString();
+    }
+    RAY_LOG(ERROR) << "Failed to cleanup job " << job_id << ": " << status.ToString();
+    stats::STATS_job_cleanup_failure.Record(1);
+    return false;
+  }
+  
+  return true;
+}
+
+int GcsJobManager::BatchCleanupJobs(const std::vector<JobID> &job_ids) {
+  RAY_LOG(INFO) << "Batch cleaning up " << job_ids.size() << " jobs";
+  stats::STATS_job_batch_cleanup_count.Record(job_ids.size());
+  
+  auto start_time = absl::GetCurrentTimeNanos();
+  int success_count = 0;
+  
+  for (const auto &job_id : job_ids) {
+    std::string error_message;
+    if (CleanupJob(job_id, &error_message)) {
+      success_count++;
+    }
+  }
+  
+  auto end_time = absl::GetCurrentTimeNanos();
+  double duration_ms = (end_time - start_time) / 1e6;
+  stats::STATS_job_batch_cleanup_duration_ms.Record(duration_ms);
+  stats::STATS_job_batch_cleanup_success.Record(success_count);
+  
+  RAY_LOG(INFO) << "Batch cleanup completed: " << success_count << "/" 
+                << job_ids.size() << " jobs successfully cleaned up in " 
+                << duration_ms << "ms";
+  return success_count;
+}
+
+void GcsJobManager::HandleCleanupJob(rpc::CleanupJobRequest request,
+                                    rpc::CleanupJobReply *reply,
+                                    rpc::SendReplyCallback send_reply_callback) {
+  const auto job_id = JobID::FromBinary(request.job_id());
+  RAY_LOG(DEBUG) << "Handling CleanupJob request for job " << job_id;
+  
+  auto start_time = absl::GetCurrentTimeNanos();
+  std::string error_message;
+  bool success = CleanupJob(job_id, &error_message);
+  auto end_time = absl::GetCurrentTimeNanos();
+  double duration_ms = (end_time - start_time) / 1e6;
+  
+  if (success) {
+    reply->set_cleanup_status(rpc::JOB_CLEANUP_SUCCESS);
+  } else {
+    reply->set_cleanup_status(rpc::JOB_CLEANUP_FAILED);
+    reply->set_error_message(error_message);
+  }
+  
+  reply->set_cleanup_time_ms(static_cast<int64_t>(duration_ms));
+  reply->mutable_status()->set_code(0);  // 成功的状态码
+  
+  send_reply_callback(Status::OK(), nullptr, nullptr);
+}
+
+void GcsJobManager::HandleBatchCleanupJobs(rpc::BatchCleanupJobsRequest request,
+                                         rpc::BatchCleanupJobsReply *reply,
+                                         rpc::SendReplyCallback send_reply_callback) {
+  RAY_LOG(DEBUG) << "Handling BatchCleanupJobs request for " 
+                 << request.job_ids_size() << " jobs";
+  
+  std::vector<JobID> job_ids;
+  for (const auto &job_id_binary : request.job_ids()) {
+    job_ids.push_back(JobID::FromBinary(job_id_binary));
+  }
+  
+  auto start_time = absl::GetCurrentTimeNanos();
+  int success_count = BatchCleanupJobs(job_ids);
+  auto end_time = absl::GetCurrentTimeNanos();
+  double duration_ms = (end_time - start_time) / 1e6;
+  
+  reply->set_success_count(success_count);
+  reply->set_total_duration_ms(static_cast<int64_t>(duration_ms));
+  reply->mutable_status()->set_code(0);  // 成功的状态码
+  
+  // 添加失败的作业信息
+  for (size_t i = 0; i < job_ids.size(); i++) {
+    if (i < static_cast<size_t>(success_count)) continue;  // 跳过成功的作业
+    
+    auto failed_job = reply->add_failed_jobs();
+    failed_job->set_job_id(job_ids[i].Binary());
+    failed_job->set_error_message("Failed to cleanup job");
+  }
+  
+  send_reply_callback(Status::OK(), nullptr, nullptr);
 }
 
 }  // namespace gcs

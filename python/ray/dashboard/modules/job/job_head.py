@@ -631,3 +631,76 @@ class JobHead(dashboard_utils.DashboardHeadModule):
     @staticmethod
     def is_minimal_module():
         return False
+
+    @routes.post("/api/jobs/{job_id}/cleanup")
+    async def cleanup_job(req: Request) -> Response:
+        job_id = req.match_info["job_id"]
+        try:
+            force = req.query.get("force", "false").lower() == "true"
+            
+            # 调用 GCS 清理作业
+            reply = await req.config_dict["gcs_job_manager"].cleanup_job(job_id, force)
+            
+            if reply.status == ray.dashboard.modules.job.JobCleanupStatus.SUCCESS:
+                return Response(
+                    text=json.dumps({
+                        "success": True,
+                        "message": f"Job {job_id} cleaned up successfully"
+                    }),
+                    content_type="application/json"
+                )
+            else:
+                return Response(
+                    text=json.dumps({
+                        "success": False,
+                        "error": reply.error_message
+                    }),
+                    content_type="application/json",
+                    status=400
+                )
+        except Exception as e:
+            return Response(
+                text=json.dumps({
+                    "success": False,
+                    "error": str(e)
+                }),
+                content_type="application/json",
+                status=500
+            )
+
+    @routes.post("/api/jobs/batch_cleanup")
+    async def batch_cleanup_jobs(req: Request) -> Response:
+        try:
+            data = await req.json()
+            job_ids = data.get("job_ids", [])
+            
+            if not job_ids:
+                return Response(
+                    text=json.dumps({
+                        "success": False,
+                        "error": "No job IDs provided"
+                    }),
+                    content_type="application/json",
+                    status=400
+                )
+            
+            # 调用 GCS 批量清理作业
+            reply = await req.config_dict["gcs_job_manager"].batch_cleanup_jobs(job_ids)
+            
+            return Response(
+                text=json.dumps({
+                    "success": True,
+                    "success_count": reply.success_count,
+                    "total_count": reply.total_count
+                }),
+                content_type="application/json"
+            )
+        except Exception as e:
+            return Response(
+                text=json.dumps({
+                    "success": False,
+                    "error": str(e)
+                }),
+                content_type="application/json",
+                status=500
+            )
